@@ -1,6 +1,7 @@
 from unicodedata import category
 import torch
 from tqdm import tqdm
+import random
 from torch.utils.data import TensorDataset
 import pickle
 import csv
@@ -11,22 +12,28 @@ import pandas as pd
 def getData(type,tokenizer):
     labels=[]
     input_ids=[]
+    ids=[]
     title_ids=[]
     text_ids=[]
     categories=[]
     attn_mask=[]
     if type == "all":
-        df = pd.read_csv('data/unlabel_train.csv', sep='\t')
+        df = pd.read_csv('data/reli_pseduo_data.csv', sep='\t')
         df = df.values.tolist()
+        random.shuffle(df)
         for line in tqdm(df):
             try:
                 # line=line.strip().split('\t')
+                ids.append([int(line[0])])
                 labels.append([int(line[1])])
-                categories.append([int(line[2])])
                 text=line[4].split('<')[0]
-                title=line[3]
-                text_ids.append(tokenizer(text)["input_ids"])
-                title_ids.append(tokenizer(title)["input_ids"])
+                tokenized_data=tokenizer(text,padding='max_length',truncation=True,max_length=512)
+                input_ids.append(tokenized_data["input_ids"])
+                attn_mask.append(tokenized_data["attention_mask"])
+                # categories.append([int(line[2])])
+                # title=line[3]
+                # text_ids.append(tokenizer(text)["input_ids"])
+                # title_ids.append(tokenizer(title)["input_ids"])
             except:
                 pass
     if type in [0,1,2,3]:
@@ -36,8 +43,8 @@ def getData(type,tokenizer):
                 try:
                     ith+=1
                     line=line.strip().split('\t')
-                    if int(line[1])==0 and ith%6!=0:
-                        continue
+                    # if int(line[1])==0 and ith%6!=0:
+                    #     continue
                     labels.append([int(line[1])])
                     # categories.append([int(line[2])])
                     text=line[4]
@@ -75,15 +82,16 @@ def getData(type,tokenizer):
                 except:
                     pass
 
-    # labels=torch.tensor(labels, dtype=torch.long)
-    # input_ids=torch.tensor(input_ids, dtype=torch.long)
+    # ids=torch.tensor(ids, dtype=torch.long)
+    labels=torch.tensor(labels, dtype=torch.long)
+    input_ids=torch.tensor(input_ids, dtype=torch.long)
     # title_ids=torch.tensor(title_ids, dtype=torch.long)
     # text_ids=torch.tensor(text_ids, dtype=torch.long)
     # categories=torch.tensor(categories, dtype=torch.long)
-    # attn_mask=torch.tensor(attn_mask, dtype=torch.long)
+    attn_mask=torch.tensor(attn_mask, dtype=torch.long)
     # print(labels.shape,input_ids.shape,attn_mask.shape)
-    # dataset=TensorDataset(input_ids, attn_mask, labels)
-    dataset={"title_ids":title_ids,"text_ids":text_ids,"categories":categories,"labels":labels}
+    dataset=TensorDataset(input_ids, attn_mask, labels)
+    # dataset={"title_ids":title_ids,"text_ids":text_ids,"categories":categories,"labels":labels}
     return dataset
 
 def getTrainData(tokenizer):
@@ -120,7 +128,7 @@ def getQuatData(tokenizer):
     return datasets
 
 if __name__ == '__main__':
-    feature_file = "data/unlabel_features.pkl"
+    feature_file = "data/pseduo_features.pkl"
     dataset=getData("all",BertTokenizer.from_pretrained("bert-base-chinese"))
     with open(feature_file, 'wb') as w:
         pickle.dump(dataset, w)
