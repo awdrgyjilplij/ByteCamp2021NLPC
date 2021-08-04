@@ -6,7 +6,7 @@ from tqdm import tqdm
 import numpy as np
 import logging
 from transformers import BertForSequenceClassification, BertConfig, BertTokenizer
-from dataprocessor import getTrainData, getEvalData
+from dataprocessor import getQuatData, getTrainData, getEvalData
 from transformers import get_linear_schedule_with_warmup
 from torch.utils.data import SequentialSampler, DataLoader
 
@@ -17,11 +17,8 @@ logger = logging.getLogger(__name__)
 
 def accuracy(logits,labels):
     outputs = np.argmax(logits, axis=1)
-    sum1=0
-    for i in range(len(outputs)):
-        if outputs[i]==labels[i] and labels[i]==1:
-            sum1+=1
-    return np.sum(outputs == labels),sum1/sum(outputs),sum1/sum(labels)
+    sum1 = sum([1 if outputs[i]==labels[i] and labels[i]==1 else 0 for i in range(len(outputs))])
+    return sum(outputs == labels)/len(outputs),sum1/sum(outputs),sum1/sum(labels)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -68,7 +65,7 @@ def main():
     n_gpu = torch.cuda.device_count()
     logger.info("device %s n_gpu %d distributed training",device, n_gpu)
 
-    pretrained="hfl/chinese-bert-wwm-ext"
+    pretrained="bert-base-chinese"
     model_config = BertConfig.from_pretrained(
         pretrained, attention_probs_dropout_prob=args.a_dropout_prob, hidden_dropout_prob=args.h_dropout_prob,
         summary_last_dropout=args.s_dropout_prob)
@@ -79,18 +76,22 @@ def main():
     torch.cuda.empty_cache()
     model.to(device)
     model = torch.nn.DataParallel(model)
+    print("model "+pretrained+" params: ",sum([param.nelement() for param in model.parameters()]))
 
-    train_dataset = getTrainData(tokenizer)
-    eval_dataset = getEvalData(tokenizer)
+    datasets = getQuatData(tokenizer)
+    samplers = [SequentialSampler(datasets[i]) for i in range(4)]
+    data_loaders = [DataLoader(datasets[i], sampler=samplers[i], batch_size=args.train_batch_size, drop_last=False) for i in range(4)]
+    # train_dataset = getTrainData(tokenizer)
+    # eval_dataset = getEvalData(tokenizer)
 
-    train_sampler = SequentialSampler(train_dataset)
-    train_loader = DataLoader(
-        train_dataset, sampler=train_sampler, batch_size=args.train_batch_size, drop_last=False)
-    eval_sampler = SequentialSampler(eval_dataset)
-    eval_loader = DataLoader(
-        eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size, drop_last=False)
+    # train_sampler = SequentialSampler(train_dataset)
+    # train_loader = DataLoader(
+    #     train_dataset, sampler=train_sampler, batch_size=args.train_batch_size, drop_last=False)
+    # eval_sampler = SequentialSampler(eval_dataset)
+    # eval_loader = DataLoader(
+    #     eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size, drop_last=False)
 
-    step_per_epoch = len(train_loader)
+    step_per_epoch = len(data_loaders[0])*3
     total_steps = step_per_epoch*args.num_train_epochs
     optimizer = torch.optim.AdamW(model.parameters(),lr=args.learning_rate)
     scheduler = get_linear_schedule_with_warmup(optimizer, 
@@ -105,26 +106,27 @@ def main():
         model.train()
         train_loss = 0
         with tqdm(total=step_per_epoch, desc='Epoch %d' % (ie + 1)) as pbar:
-            for batch in train_loader:
-                batch = tuple(t.to(device) for t in batch)
-                input_ids, attn_mask, labels = batch
+            for data_loader in data_loaders[:3]:
+                for batch in data_loader:
+                    batch = tuple(t.to(device) for t in batch)
+                    input_ids, attn_mask, labels = batch
 
-                loss = model(input_ids=input_ids, attention_mask=attn_mask, labels=labels)[0]
-                if n_gpu > 1:
-                    loss = loss.mean()  
-                train_loss+=loss.item()
+                    loss = model(input_ids=input_ids, attention_mask=attn_mask, labels=labels)[0]
+                    if n_gpu > 1:
+                        loss = loss.mean()  
+                    train_loss+=loss.item()
 
-                loss.backward()
-                #torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()  
-                #scheduler.step()
-                model.zero_grad()
-                pbar.set_postfix({'loss': "%.3f"%loss})
-                pbar.update(1)
-                break
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    optimizer.step()  
+                    scheduler.step()
+                    model.zero_grad()
+                    pbar.set_postfix({'loss': "%.3f"%loss})
+                    pbar.update(1)
 
         model.eval()
         eval_loss, eval_accuracy, eval_precision, eval_recall, eval_examples = 0, 0, 0, 0, 0
+        eval_loader = data_loaders[3]
         for batch in eval_loader:
             batch = tuple(t.to(device) for t in batch)
             input_ids, attn_mask, labels = batch
@@ -145,9 +147,9 @@ def main():
             eval_examples += input_ids.size(0)
 
         eval_loss = eval_loss / len(eval_loader)
-        eval_accuracy = eval_accuracy / eval_examples
-        eval_precision = eval_precision / eval_examples
-        eval_recall = eval_recall / eval_examples
+        eval_accuracy = eval_accuracy / len(eval_loader)
+        eval_precision = eval_precision / len(eval_loader)
+        eval_recall = eval_recall / len(eval_loader)
 
         result = {'eval_loss': eval_loss,
                     'eval_accuracy': eval_accuracy,

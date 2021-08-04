@@ -10,7 +10,7 @@ with open("data/total_new.tsv","r",encoding="utf-8") as f:
             if label==1:
                 data.append(line_)
             else:
-                if i%40==0:
+                if i%6==0:
                     data.append(line_)
         except:
             pass
